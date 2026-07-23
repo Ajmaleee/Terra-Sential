@@ -1,0 +1,23 @@
+changes:
+
+
+
+I'll rebuild the AP config page as a single neumorphic-themed page assembled in memory and sent in one srv.send() call, instead of the six sendContent_P fragments. That streaming approach is almost certainly your cutoff culprit — sendContent_P writes raw chunks without a known Content-Length, so the client has to rely on chunked-transfer framing arriving perfectly intact; any hiccup (weak AP signal, browser prefetch, DNS captive-portal probe hitting / mid-stream) truncates the page. Building the full HTML into one String and sending it with a proper Content-Length fixes that at the root.
+
+
+Confirmed line 268 has the bug — that %% will render literally as two percent signs in the browser since String::replace() isn't printf. Fixing it:
+
+Good — only one match, the actual closing delimiter. The raw string is clean. Let me do a final syntax sanity pass on the AP block.
+
+This looks correct. Everything else in the sketch (buzzer, sensors, display views, Firebase, sleep logic) is untouched — only the AP namespace changed.
+
+-What actually caused the cutoff, and what changed:
+
+The bug: sendContent_P streams raw PROGMEM chunks with no declared Content-Length (relies on HTTP chunked-transfer framing). On an ESP32 softAP, that's fragile — weak signal, a browser prefetch, or the OS's captive-portal probe hitting / mid-stream can truncate it, and you get exactly the "page cut off" symptom.
+
+The fix: handleRoot() now builds the whole page into one String (FPSTR(PAGE_TMPL) + six .replace() calls for SSID/thresholds/push interval/firmware version), then calls srv.send(200, "text/html", page) once. WebServer::send() computes a real Content-Length from the String's length, so the browser knows exactly how many bytes to expect — nothing can be truncated mid-transfer.
+
+Also redesigned: neumorphic theme — single flat background (
+#e6e9ef), no borders/gradients, just paired light/dark box-shadows (raised for the card and button, inset for input fields), rounded 14–28px corners, a soft blue accent, and a pressed/inset state on button :active.
+
+One thing worth flagging: I caught and fixed a %% → (%) typo in the new template while reviewing — since this template is filled via String::replace() and not snprintf, a leftover %% would have literally shown up as %% in the browser rather than a single %.

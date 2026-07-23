@@ -1,4 +1,4 @@
-// TERRA SENTINEL v1.8 — Landslide Detection OS
+// TERRA SENTINEL v1.9 — Landslide Detection OS
 // ESP32 + SH1106 128x64 (I2C 21/22) + Capacitive Soil (ADC 32)
 // Buzzer GPIO25 | UP GPIO15 | SEL GPIO4 | DOWN GPIO5
 // Libs: U8g2, ArduinoJson — both via Library Manager
@@ -59,7 +59,7 @@
 #define BUZ_CH  0
 #define BUZ_RES 10
 
-#define FW_VER   "1.8.0"
+#define FW_VER   "1.9.0"
 #define DEV_NAME "TERRA SENTINEL"
 
 // ─────────────────────────────────────────────
@@ -72,7 +72,7 @@ U8G2_SH1106_128X64_NONAME_F_HW_I2C
 //  TYPES
 // ─────────────────────────────────────────────
 enum class AL   : uint8_t { OK=0,WATCH=1,WARN=2,CRIT=3 };
-enum class View : uint8_t { DASH=0,SENS=1,ALERTS=2,NET=3,CFG=4,ABOUT=5,VCOUNT };
+enum class View : uint8_t { DASH=0,SENS=1,ALERTS=2,NET=3,CFG=4,ABOUT=5,_N };
 enum class NS   : uint8_t { DOWN=0,CING=1,UP=2,FB=3,ERR=4,AP=5 };
 
 struct Soil { uint16_t raw=0; uint8_t pct=0; AL al=AL::OK; };
@@ -199,87 +199,107 @@ namespace Slp {
 
 // ─────────────────────────────────────────────
 //  AP CONFIG PORTAL
-//  Fixes:
-//  1. softAP() with explicit channel + 200ms settle delay
-//  2. DNSServer wildcard → 192.168.4.1 (captive portal)
-//  3. All inputs have both id= and name= (JS fetch + HTTP POST both work)
-//  4. Threshold inputs each in own <div> with correct closing tags
-//  5. Short SEL (not hold) toggles AP from CFG view
-//  6. Light sleep disabled while AP is active
+//  Fixes vs v1.8:
+//  1. The ENTIRE page is now assembled into one String and sent with a
+//     single srv.send(200,"text/html", page) call. No more sendContent_P
+//     fragments — WebServer computes a real Content-Length up front, so
+//     the browser knows exactly how many bytes to expect and the page can
+//     no longer be cut off mid-stream (weak AP RSSI, browser prefetch,
+//     captive-portal probes hitting "/" mid-transfer, etc.)
+//  2. Values are substituted via String::replace() on placeholder tokens
+//     kept in the PROGMEM template — same F() flash-storage trick as
+//     before, just no longer chunked out piece by piece.
+//  3. softAP() with explicit channel + settle delay retained.
+//  4. DNSServer wildcard → 192.168.4.1 (captive portal) retained.
+//  5. Full neumorphic ("soft UI") visual redesign — single background
+//     tone, raised/inset shadow pairs instead of borders, no gradients.
 // ─────────────────────────────────────────────
 namespace AP {
     WebServer srv(80);
     DNSServer dns;
 
-    static const char H1[] PROGMEM =
-        "<!DOCTYPE html><html><head><meta charset=UTF-8>"
-        "<meta name=viewport content='width=device-width,initial-scale=1'>"
-        "<title>Terra Config</title><style>"
-        "*{box-sizing:border-box;margin:0;padding:0}"
-        "body{font-family:system-ui,sans-serif;background:#0f1117;color:#e2e8f0;"
-        "min-height:100vh;display:flex;align-items:center;justify-content:center;padding:16px}"
-        ".c{background:#1e2130;border:1px solid #2d3250;border-radius:16px;"
-        "padding:24px;width:100%;max-width:420px}"
-        "h1{font-size:17px;font-weight:700;color:#7eb8f7;margin-bottom:20px}"
-        "h2{font-size:10px;letter-spacing:1.5px;text-transform:uppercase;"
-        "color:#475569;margin:18px 0 8px}"
-        "label{display:block;font-size:12px;color:#94a3b8;margin-bottom:4px}"
-        "input[type=text],input[type=password],input[type=number]{"
-        "width:100%;padding:9px 11px;background:#0f1117;border:1px solid #2d3250;"
-        "border-radius:7px;color:#e2e8f0;font-size:13px;outline:none;margin-bottom:12px}"
-        "input:focus{border-color:#7eb8f7;box-shadow:0 0 0 2px #7eb8f720}"
-        ".row{display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px}"
-        ".row input{margin-bottom:0}"
-        "button{width:100%;padding:12px;background:#7eb8f7;color:#0f1117;"
-        "font-size:14px;font-weight:700;border:none;border-radius:9px;"
-        "cursor:pointer;margin-top:14px}"
-        "#ok{display:none;color:#4ade80;font-size:13px;text-align:center;margin-top:12px}"
-        "</style></head><body><div class=c>"
-        "<h1>&#127757; Terra Sentinel v" FW_VER "</h1>"
-        "<h2>WiFi Credentials</h2>"
-        "<label>Network SSID</label>"
-        "<input type=text id=s name=s placeholder='e.g. MyHomeWiFi' value='";
-    // → inject cfg.ssid
-    static const char H2[] PROGMEM =
-        "'><label>Password</label>"
-        "<input type=password id=p name=p placeholder='WiFi password'>"
-        "<h2>Alert Thresholds (%)</h2><div class=row>"
-        "<div><label>Watch</label><input type=number id=tw name=tw min=1 max=99 value=";
-    // → inject cfg.tw
-    static const char H3[] PROGMEM =
-        "></div><div><label>Warning</label>"
-        "<input type=number id=wr name=wr min=1 max=99 value=";
-    // → inject cfg.wr
-    static const char H4[] PROGMEM =
-        "></div><div><label>Critical</label>"
-        "<input type=number id=tc name=tc min=1 max=99 value=";
-    // → inject cfg.tc
-    static const char H5[] PROGMEM =
-        "></div></div>"
-        "<h2>Firebase Push Interval (seconds)</h2>"
-        "<input type=number id=pm name=pm min=5 max=3600 value=";
-    // → inject cfg.pms/1000
-    static const char H6[] PROGMEM =
-        "><button onclick=\""
-        "var f=new URLSearchParams();"
-        "['s','p','tw','wr','tc','pm'].forEach(function(k){"
-        "var e=document.getElementById(k);if(e)f.append(k,e.value)});"
-        "fetch('/save',{method:'POST',body:f}).then(function(r){"
-        "if(r.ok)document.getElementById('ok').style.display='block'})\">"
-        "Save &amp; Restart</button>"
-        "<div id=ok>&#10003; Saved — restarting...</div>"
-        "</div></body></html>";
+    // Single-piece PROGMEM template. %TOKENS% are replaced at request time.
+    static const char PAGE_TMPL[] PROGMEM = R"HTML(<!DOCTYPE html><html><head><meta charset=UTF-8>
+<meta name=viewport content='width=device-width,initial-scale=1'>
+<title>Terra Config</title><style>
+*{box-sizing:border-box;margin:0;padding:0}
+:root{
+  --bg:#e6e9ef;
+  --text:#3a4356;
+  --sub:#8a93a6;
+  --accent:#5b8def;
+  --shadow-d:#b9c0cf;
+  --shadow-l:#ffffff;
+}
+body{font-family:'Segoe UI',system-ui,sans-serif;background:var(--bg);color:var(--text);
+  min-height:100vh;display:flex;align-items:center;justify-content:center;padding:20px}
+.c{background:var(--bg);border-radius:28px;padding:28px 26px;width:100%;max-width:420px;
+  box-shadow:12px 12px 24px var(--shadow-d),-12px -12px 24px var(--shadow-l)}
+h1{font-size:17px;font-weight:700;color:var(--text);margin-bottom:6px;display:flex;align-items:center;gap:8px}
+.tag{font-size:11px;color:var(--sub);margin-bottom:20px;letter-spacing:.3px}
+h2{font-size:10px;letter-spacing:1.8px;text-transform:uppercase;color:var(--sub);
+  margin:20px 0 10px;font-weight:700}
+label{display:block;font-size:12px;color:var(--sub);margin-bottom:6px;font-weight:600}
+.field{background:var(--bg);border-radius:14px;margin-bottom:14px;
+  box-shadow:inset 5px 5px 10px var(--shadow-d),inset -5px -5px 10px var(--shadow-l)}
+input[type=text],input[type=password],input[type=number]{
+  width:100%;padding:11px 14px;background:transparent;border:none;
+  color:var(--text);font-size:14px;outline:none;font-family:inherit}
+.row{display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px}
+.row .field{margin-bottom:0}
+button{width:100%;padding:14px;background:var(--bg);color:var(--accent);
+  font-size:14px;font-weight:700;border:none;border-radius:16px;letter-spacing:.3px;
+  cursor:pointer;margin-top:22px;
+  box-shadow:8px 8px 16px var(--shadow-d),-8px -8px 16px var(--shadow-l);
+  transition:box-shadow .12s ease}
+button:active{box-shadow:inset 5px 5px 10px var(--shadow-d),inset -5px -5px 10px var(--shadow-l)}
+#ok{display:none;color:#3fa66a;font-size:13px;text-align:center;margin-top:14px;font-weight:600}
+.hint{font-size:10px;color:var(--sub);text-align:right;margin-top:-8px;margin-bottom:14px}
+</style></head><body><div class=c>
+<h1>&#127757; Terra Sentinel</h1>
+<div class=tag>Firmware v%FWVER% &middot; Setup Portal</div>
+
+<h2>WiFi Credentials</h2>
+<label>Network SSID</label>
+<div class=field><input type=text id=s name=s placeholder='e.g. MyHomeWiFi' value='%SSID%'></div>
+<label>Password</label>
+<div class=field><input type=password id=p name=p placeholder='Leave blank to keep current'></div>
+
+<h2>Alert Thresholds (%)</h2>
+<div class=row>
+  <div><label>Watch</label><div class=field><input type=number id=tw name=tw min=1 max=99 value=%TW%></div></div>
+  <div><label>Warning</label><div class=field><input type=number id=wr name=wr min=1 max=99 value=%WR%></div></div>
+  <div><label>Critical</label><div class=field><input type=number id=tc name=tc min=1 max=99 value=%TC%></div></div>
+</div>
+
+<h2>Firebase Push Interval</h2>
+<div class=field><input type=number id=pm name=pm min=5 max=3600 value=%PM%></div>
+<div class=hint>seconds</div>
+
+<button onclick="
+var f=new URLSearchParams();
+['s','p','tw','wr','tc','pm'].forEach(function(k){
+var e=document.getElementById(k);if(e)f.append(k,e.value)});
+fetch('/save',{method:'POST',body:f}).then(function(r){
+if(r.ok)document.getElementById('ok').style.display='block'})">Save &amp; Restart</button>
+<div id=ok>&#10003; Saved — restarting...</div>
+</div></body></html>)HTML";
 
     void handleRoot(){
+        String page; page.reserve(4200);
+        page = FPSTR(PAGE_TMPL);
         char nb[8];
-        srv.setContentLength(CONTENT_LENGTH_UNKNOWN);
-        srv.send(200,"text/html","");
-        srv.sendContent_P(H1); srv.sendContent(cfg.ssid);
-        srv.sendContent_P(H2); snprintf(nb,8,"%d",cfg.tw);        srv.sendContent(nb);
-        srv.sendContent_P(H3); snprintf(nb,8,"%d",cfg.wr);        srv.sendContent(nb);
-        srv.sendContent_P(H4); snprintf(nb,8,"%d",cfg.tc);        srv.sendContent(nb);
-        srv.sendContent_P(H5); snprintf(nb,8,"%lu",cfg.pms/1000); srv.sendContent(nb);
-        srv.sendContent_P(H6); srv.sendContent("");
+
+        page.replace("%FWVER%", FW_VER);
+        page.replace("%SSID%",  cfg.ssid);
+
+        snprintf(nb,8,"%d",cfg.tw);        page.replace("%TW%",nb);
+        snprintf(nb,8,"%d",cfg.wr);        page.replace("%WR%",nb);
+        snprintf(nb,8,"%d",cfg.tc);        page.replace("%TC%",nb);
+        snprintf(nb,8,"%lu",cfg.pms/1000); page.replace("%PM%",nb);
+
+        // One shot — real Content-Length, cannot be truncated mid-stream.
+        srv.send(200,"text/html",page);
     }
     void handleSave(){
         if(srv.hasArg("s"))  srv.arg("s").toCharArray(cfg.ssid,64);
@@ -572,7 +592,7 @@ void render(){
 //  UP/DOWN: wrap-around view navigation
 // ─────────────────────────────────────────────
 void handleInput(){
-    uint8_t vN=(uint8_t)View::VCOUNT;
+    uint8_t vN=(uint8_t)View::_N;
 
     // ── Menu open ────────────────────────────
     if(app.mopen){
