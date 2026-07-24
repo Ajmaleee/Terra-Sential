@@ -72,7 +72,7 @@ U8G2_SH1106_128X64_NONAME_F_HW_I2C
 //  TYPES
 // ─────────────────────────────────────────────
 enum class AL   : uint8_t { OK=0,WATCH=1,WARN=2,CRIT=3 };
-enum class View : uint8_t { DASH=0,SENS=1,ALERTS=2,NET=3,CFG=4,ABOUT=5,_N };
+enum class View : uint8_t { DASH=0,SENS=1,ALERTS=2,NET=3,CFG=4,ABOUT=5,VIEW_COUNT };
 enum class NS   : uint8_t { DOWN=0,CING=1,UP=2,FB=3,ERR=4,AP=5 };
 
 struct Soil { uint16_t raw=0; uint8_t pct=0; AL al=AL::OK; };
@@ -592,7 +592,7 @@ void render(){
 //  UP/DOWN: wrap-around view navigation
 // ─────────────────────────────────────────────
 void handleInput(){
-    uint8_t vN=(uint8_t)View::_N;
+    uint8_t vN=(uint8_t)View::VIEW_COUNT;
 
     // ── Menu open ────────────────────────────
     if(app.mopen){
